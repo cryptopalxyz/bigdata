@@ -32,19 +32,44 @@ object SparkCopy extends Logging with App {
     var fileList = ArrayBuffer[(Path, Path)]()
     var folderList = ArrayBuffer[FileStatus]()
 
-    @transient
     val fs = sourcePath.getFileSystem(spark.sparkContext.hadoopConfiguration)
 
     checkDirectories(sourcePath, sourcePathRoot, targetPath, spark.sparkContext, fileList, folderList)
     val fileStringList = fileList.map((s) => (s._1.toString(), s._2.toString))
 
     val rdd = spark.sparkContext.makeRDD(fileStringList, config.options.maxConcurrency)
-
+    val sparkContext = spark.sparkContext
+    /*
+    //map是在excutor中进行计算等操作的，而SparkSession是属于Driver端的组件或者服务，怎么能放到excutor中去呢？
     rdd.map {
       file =>
-        val fs = new Path(file._1).getFileSystem(spark.sparkContext.hadoopConfiguration)
-        FileUtil.copy(fs, new Path(file._1), fs, new Path(file._2), false, spark.sparkContext.hadoopConfiguration)
-    }
+        val f1 = new Path(file._1)
+        val newSpark = SparkSession.builder().getOrCreate()
+        val hadoopConf = newSpark.sparkContext.hadoopConfiguration
+        val f2 = f1.getFileSystem(hadoopConf)
+        val fs = new Path(file._1).getFileSystem(newSpark.sparkContext.hadoopConfiguration)
+        FileUtil.copy(fs, new Path(file._1), fs, new Path(file._2), false, true, newSpark.sparkContext.hadoopConfiguration)
+    }.foreach(print(_))
+   */
+    val final_result = rdd.mapPartitions(value => {
+      val newSpark = SparkSession.builder().getOrCreate()
+      var result = ArrayBuffer[Boolean]()
+      while (value.hasNext) {
+        val index = value.next()
+        val fs = new Path(index._1).getFileSystem(newSpark.sparkContext.hadoopConfiguration)
+
+        val flag = FileUtil.copy(fs, new Path(index._1), fs, new Path(index._2), false, newSpark.sparkContext.hadoopConfiguration)
+
+        result.append(flag)
+
+      }
+      result.iterator
+    })
+
+    val failed_task = final_result.filter(!_).count()
+    if (failed_task > 0 && !config.options.ignoreErrors)
+      throw new RuntimeException("tasks failed")
+
 
   }
 
