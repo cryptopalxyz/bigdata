@@ -9,8 +9,10 @@ import org.apache.hadoop.fs.{FileStatus, FileSystem, FileUtil, Path}
 import org.apache.log4j.Level
 import org.apache.spark.SparkContext
 import org.apache.spark.sql.SparkSession
+import org.apache.spark.util.LongAccumulator
 import sparkcourse.distcp.utils.OptionsParsing
 import sparkcourse.sparkdistcp.interfaces.Logging
+import sparkcourse.sparkdistcp.objects.{ConfigSerDeser}
 
 import scala.collection.mutable.ArrayBuffer
 
@@ -28,7 +30,7 @@ object SparkCopy extends Logging with App {
     val spark = SparkSession.builder().appName("spark-distcp").master("local").getOrCreate()
     spark.sparkContext.setLogLevel("DEBUG")
     setLogLevel(Level.DEBUG)
-
+    val filesFailed: LongAccumulator = spark.sparkContext.longAccumulator("FilesFailed")
     var fileList = ArrayBuffer[(Path, Path)]()
     var folderList = ArrayBuffer[FileStatus]()
 
@@ -41,6 +43,7 @@ object SparkCopy extends Logging with App {
     val sparkContext = spark.sparkContext
     /*
     //map是在excutor中进行计算等操作的，而SparkSession是属于Driver端的组件或者服务，怎么能放到excutor中去呢？
+    //把config Ser之后发到executor，避免产生spark session
     rdd.map {
       file =>
         val f1 = new Path(file._1)
@@ -51,23 +54,28 @@ object SparkCopy extends Logging with App {
         FileUtil.copy(fs, new Path(file._1), fs, new Path(file._2), false, true, newSpark.sparkContext.hadoopConfiguration)
     }.foreach(print(_))
    */
-    val final_result = rdd.mapPartitions(value => {
-      val newSpark = SparkSession.builder().getOrCreate()
+
+    val serConfig = new ConfigSerDeser(rdd.sparkContext.hadoopConfiguration)
+    val r = rdd.mapPartitions(value => {
+      //val newSpark = SparkSession.builder().getOrCreate()
       var result = ArrayBuffer[Boolean]()
       while (value.hasNext) {
         val index = value.next()
-        val fs = new Path(index._1).getFileSystem(newSpark.sparkContext.hadoopConfiguration)
+        val fs = new Path(index._1).getFileSystem(serConfig.get())
 
-        val flag = FileUtil.copy(fs, new Path(index._1), fs, new Path(index._2), false, newSpark.sparkContext.hadoopConfiguration)
-
+        val flag = FileUtil.copy(fs, new Path(index._1), fs, new Path(index._2), false, serConfig.get())
+        if (!flag)
+          filesFailed.add(1)
         result.append(flag)
 
       }
       result.iterator
-    })
+    }).foreach(print(_))
 
-    val failed_task = final_result.filter(!_).count()
-    if (failed_task > 0 && !config.options.ignoreErrors)
+    //println(r)
+
+    //val failed_task = final_result.filter(!_).count()
+    if (filesFailed.value > 0 && !config.options.ignoreErrors)
       throw new RuntimeException("tasks failed")
 
 
