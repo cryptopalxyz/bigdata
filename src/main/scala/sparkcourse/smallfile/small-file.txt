@@ -1,0 +1,37 @@
+1.思考题:如何避免小文件问题
+• 如何避免小文件问题?给出2~3种解决方案
+
+
+事前避免：
+
+a. 流式写入
+由于流式数据的近乎实时的要求，小的timewindow（每隔几分钟或几个小时）数量较小，会生产很多小文件。
+可以使用HBase或者Kudu来存储避免小文件的产生。
+
+b. 过度分区表
+数据量很小的表（几百M），可以考虑不创建分区表。
+
+c. hive,Spark过度并行化
+减少hive reduce的个数
+spark产生的小文件个数=Task数M*分区数N，考虑task数是否合理
+
+d. Spark SQL
+对原始数据按照分区字段进行shuffle，可以避免小文件(M = N)，可能引入数据倾斜
+可以使用DISTRIBUTE BY rand() 将数据随机分配给Reduce，这样可以使得每个Reduce处理的数据大体一致.
+
+e. Hive执行Map前合并小文件
+
+f. Hive在map端和reduce端合并小文件
+set hive.merge.mapfiles = true;
+set hive.merge.mapredfiles = true;
+
+g. hive结果进行压缩
+set hive.exec.compress.output=true;
+set mapreduce.output.fileoutputformat.compress=true;
+
+
+
+事后补救：
+a. AQE在计算过程中自动合并小文件
+b. 定期启动job合并小文件, 或者使用hive自带的 concatenate 命令自动合并小文件
+c. 除上面的原因外，跟踪小文件的产生过程，改进ETL避免产生
