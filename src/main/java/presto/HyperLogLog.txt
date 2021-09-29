@@ -1,0 +1,55 @@
+Overview
+
+The HyperLogLog (HLL) data structure is a probabilistic data structure used to estimate the cardinality of a data set.
+Suppose that we have millions of users and we want to calculate the number of distinct visits to our web page. A naive implementation would be to store each unique user id in a set, and then the size of the set would be our cardinality.
+
+When we are dealing with very large volumes of data, counting cardinality this way will be very inefficient because the data set will take up a lot of memory.
+But if we are fine with an estimation within a few percent and don't need the exact number of unique visits, then we can use the HLL, as it was designed for exactly such a use case – estimating the count of millions or even billions of distinct values.
+
+特点
+因为 HyperLogLog 只会根据输入元素来计算基数，而不会储存输入元素本身，所以 HyperLogLog 不能像集合那样，返回输入的各个元素。
+
+HyperLogLog是一种算法，并非redis独有
+目的是做基数统计，故不是集合，不会保存元数据，只记录数量而不是数值
+耗空间极小，支持输入非常体积的数据量
+核心是基数估算算法，主要表现为计算时内存的使用和数据合并的处理。最终数值存在一定误差
+redis中每个hyperloglog key占用了12K的内存用于标记基数（官方文档）
+pfadd命令并不会一次性分配12k内存，而是随着基数的增加而逐渐增加内存分配；而pfmerge操作则会将sourcekey合并后存储在12k大小的key中，由hyperloglog合并操作的原理（两个hyperloglog合并时需要单独比较每个桶的值）可以很容易理解。
+误差说明：基数估计的结果是一个带有 0.81% 标准错误（standard error）的近似值。是可接受的范围
+Redis 对 HyperLogLog 的存储进行优化，在计数比较小时，存储空间采用稀疏矩阵存储，空间占用很小，仅仅在计数慢慢变大，稀疏矩阵占用空间渐渐超过了阈值时才会一次性转变成稠密矩阵，才会占用 12k 的空间
+
+
+Set
+熟悉Redis数据结构的同学一定首先会想到Set这个结构，我们只需要把数据都存入Set，然后用scard命令就可以得到结果，这是一种思路，但是存在一定的问题。如果数据量非常大，那么将会耗费很大的内存空间，如果这些数据仅仅是用来统计基数，那么无疑是造成了巨大的浪费，因此，我们需要找到一种占用内存较小的方法。
+
+bitmap
+bitmap同样是一种可以统计基数的方法，可以理解为用bit数组存储元素，例如01101001，表示的是[1,2,4,8]，bitmap中1的个数就是基数。bitmap也可以轻松合并多个集合，只需要将多个数组进行位与操作就可以了。bitmap相比于Set也大大节省了内存，我们来粗略计算一下，统计1亿个数据的基数，需要的内存是：100000000/8/1024/1024 ≈ 12M。
+
+虽然bitmap在节省空间方面已经有了不错的表现，但是如果需要统计1000个对象，就需要大约12G的内存，显然这个结果仍然不能令我们满意。在这种情况下，HyperLogLog将会出来拯救我们。
+
+HyperLogLog基本原理
+
+HLL的数学原理在这里不作解释，通俗来说HLL是通过散列中左边连续0的数量来估计给定集合的基数，因为一个好的哈希算法可以确保我们每个可能的散列具有大致相同的出现概率和均匀分布。这允许HLL算法基于具有最左边0的流的散列来估计它已经“看到”的元素的量。
+例如，假设我有一个哈希函数，给定一个元素它返回数字0-15的二进制表示：
+
+0000 - 0100 - 1000 - 1100
+0001 - 0101 - 1001 - 1101
+0010 - 0110 - 1010 - 1110
+
+其中二进制共有4位，每位出现0的概率是1/2,所以如果连续出现四个0则元素个数至少有16个，那么我如果得到一个左边有k个0元素则至少有2 ^ k个元素。
+
+回到Redis，对于一个输入的字符串，首先得到64位的hash值，用前14位来定位桶的位置（共有 [公式] ，即16384个桶）。后面50位即为伯努利过程，每个桶有6bit，记录第一次出现1的位置count，如果count>oldcount，就用count替换oldcount。
+了解原理之后，我们再来聊一下HyperLogLog的存储。HyperLogLog的存储结构分为密集存储结构和稀疏存储结构两种，默认为稀疏存储结构，而我们常说的占用12K内存的则是密集存储结构。
+
+用途：
+基数不大，数据量不大就用不上，会有点大材小用浪费空间，有局限性，就是只能统计基数数量，而没办法去知道具体的内容是什么，和bitmap相比，属于两种特定统计情况，简单来说，HyperLogLog 去重比 bitmap 方便很多，一般可以bitmap和hyperloglog配合使用，bitmap标识哪些用户活跃，hyperloglog计数
+
+　　　统计注册 IP 数
+　　　统计每日访问 IP 数
+　　　统计页面实时 UV 数
+　　　统计在线用户数
+　　　统计用户每天搜索不同词条的个数
+
+Redis的命令PFADD实现HyperLogLog
+Presto implements the approx_distinct() function using the HyperLogLog data structure.
+BigQuery实现APPROX_COUNT_DISTINCT
